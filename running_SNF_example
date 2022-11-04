@@ -1,0 +1,162 @@
+title: "Running SNFtool"
+subtitle: Utilising the SNFtool R package
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#Set your own path 
+knitr::opts_knit$set(root.dir = 'C:/Users/dimit/Documents/Integration_workshop/')
+```
+Test SNF for obtaining sample subtypes.
+```{r libraries, message=FALSE}
+library(CancerSubtypes)
+library(alluvial)
+library(SNFtool)
+```
+All packages should have been installed before the start of the course. If you are unable to load a library, check it is installed with:
+```{r check_package_again}
+req.packages <- c('CancerSubtypes','alluvial','SNFtool')
+data.frame(installed=sapply(req.packages, require, character.only = TRUE))
+```
+SNF integrative clustering using gene expression, miRNA expression and methylation data from TCGA Glioblastoma dataset with 215 samples.
+Survival data also available (Wang et al. Nat Methods. 2014 Mar;11(3):333-7)
+```{r prepare_data}
+#load the data
+load("GBM_SNF.RData")
+time<-GLIO_Survival$Survival
+status<-GLIO_Survival$Death
+```
+Set up hyperparameters, data and apply SNF
+```{r SNF1}
+K <- 20 # number of neighbours
+alpha <- 0.5 # hyperparameter
+T <- 20 # number of iterations 
+
+#transpose so that samples are the rows
+GeneExp<-t(GLIO_GeneExpression)
+miRNAExp<-t(GLIO_miRNAexpression)
+methyl<-t(GLIO_Methylation)
+
+#if needed normalize each feature to have mean 0 and standard deviation of 1.
+#GeneExp <- standardNormalization(GeneExp)
+#miRNAExp <- standardNormalization(miRNAExp)
+#methyl <- standardNormalization(methyl)
+
+#calculate Euclidean distance matrices 
+Dist_Gene <- (dist2(as.matrix(GeneExp),as.matrix(GeneExp)))^(1/2)
+Dist_miRNA <- (dist2(as.matrix(miRNAExp),as.matrix(miRNAExp)))^(1/2)
+Dist_methyl <- (dist2(as.matrix(methyl),as.matrix(methyl)))^(1/2)
+
+#Alternatively,calculate squared Euclidean distance matrices 
+#Dist_Gene <- dist2(as.matrix(GeneExp),as.matrix(GeneExp))
+#Dist_miRNA <- dist2(as.matrix(miRNAExp),as.matrix(miRNAExp))
+#Dist_methyl <- dist2(as.matrix(methyl),as.matrix(methyl))
+
+## Next, construct similarity graphs
+W_g1 <- affinityMatrix(Dist_Gene, K, alpha)
+W_m1 <- affinityMatrix(Dist_miRNA, K, alpha)
+W_meth1 <- affinityMatrix(Dist_methyl, K, alpha)
+
+# Next, we fuse all the graphs
+W1 <- SNF(list(W_g1,W_m1,W_meth1), K, T)
+rownames(W1)<-colnames(W1)<-rownames(GeneExp)
+
+#Estimate number of clusters based on eigengap and rotation cost
+cluster_number1<-estimateNumberOfClustersGivenGraph(W1, NUMC=2:10) 
+cluster_number1
+
+#make alluvial plot with different number of clusters for the fused network
+plotAlluvial(W1, clust.range=2:5)
+
+#use the first eigengap as number of clusters
+result_SNF_default1<-spectralClustering(W1,cluster_number1[[1]])
+# Look at distribution of group membership
+  # With table
+table(result_SNF_default1)
+
+#check the concordance between each individual network and the fused network
+#Try with number of clusters equal to 3
+clust_num=3
+ConcordanceMatrix1 <- concordanceNetworkNMI(list(W1, W_g1,W_m1,W_meth1),clust_num)
+ConcordanceMatrix1
+
+#Try clustering with number of clusters equal to 3, we will continue with this as main result
+result_SNF1<-spectralClustering(W1,clust_num)
+# Look at distribution of group membership
+  # With table
+table(result_SNF1)
+
+#cluster each data type with number of clusters equal to 3
+result_gene1<-spectralClustering(W_g1,clust_num)
+table(result_gene1)
+result_miRNA1<-spectralClustering(W_m1,clust_num)
+table(result_miRNA1)
+result_methyl1<-spectralClustering(W_meth1,clust_num)
+table(result_methyl1)
+
+#heatmap for the integrated cluster result
+M_label<-as.data.frame(result_SNF1)
+M_label_colors<-as.data.frame(apply(M_label,1,getColorsForGroups))
+colnames(M_label_colors)[1]<-"spectral"
+M_label_colors<-as.matrix(M_label_colors)
+displayClustersWithHeatmap(W = W1,group = result_SNF1, M_label_colors[,"spectral"])
+
+#heatmap for gene cluster result
+M_label<-as.data.frame(result_gene1)
+M_label_colors<-as.data.frame(apply(M_label,1,getColorsForGroups))
+colnames(M_label_colors)[1]<-"spectral"
+M_label_colors<-as.matrix(M_label_colors)
+displayClustersWithHeatmap(W = W_g1,group = result_gene1,M_label_colors[,"spectral"])
+
+#heatmap for miRNA cluster result
+M_label<-as.data.frame(result_miRNA1)
+M_label_colors<-as.data.frame(apply(M_label,1,getColorsForGroups))
+colnames(M_label_colors)[1]<-"spectral"
+M_label_colors<-as.matrix(M_label_colors)
+displayClustersWithHeatmap(W = W_m1,group = result_miRNA1,M_label_colors[,"spectral"])
+
+#heatmap for methylation cluster result
+M_label<-as.data.frame(result_methyl1)
+M_label_colors<-as.data.frame(apply(M_label,1,getColorsForGroups))
+colnames(M_label_colors)[1]<-"spectral"
+M_label_colors<-as.matrix(M_label_colors)
+displayClustersWithHeatmap(W = W_meth1,group = result_methyl1,M_label_colors[,"spectral"])
+
+#Rank each feature by NMI based on their clustering assignments
+#NMI_scores1 <- rankFeaturesByNMI(list(GeneExp, miRNAExp,methyl), W1)
+
+#adjust affinity matrices before plotting
+distanceMatrix1<-W1
+diag(distanceMatrix1) <- 0
+diag(distanceMatrix1) <-max(distanceMatrix1)
+attr(distanceMatrix1, "class") <- "Similarity"
+
+distanceMatrix_g1 <- W_g1
+diag(distanceMatrix_g1) <- 0
+diag(distanceMatrix_g1) <- max(distanceMatrix_g1)
+attr(distanceMatrix_g1, "class") <- "Similarity"
+
+distanceMatrix_m1 <- W_m1
+diag(distanceMatrix_m1) <- 0
+diag(distanceMatrix_m1) <- max(distanceMatrix_m1)
+attr(distanceMatrix_m1, "class") <- "Similarity"
+
+distanceMatrix_meth1 <- W_meth1
+diag(distanceMatrix_meth1) <- 0
+diag(distanceMatrix_meth1) <- max(distanceMatrix_meth1)
+attr(distanceMatrix_meth1, "class") <- "Similarity"
+
+#make various plots
+survAnalysis(mainTitle="GBM_SNF",time,status,result_SNF1,distanceMatrix1,similarity=TRUE)
+
+survAnalysis(mainTitle="GBM_Gene",time,status,result_gene1,distanceMatrix_g1,similarity=TRUE)
+
+survAnalysis(mainTitle="GBM_miRNA",time,status,result_miRNA1,distanceMatrix_m1,similarity=TRUE)
+
+survAnalysis(mainTitle="GBM_methyl",time,status,result_methyl1,distanceMatrix_meth1,similarity=TRUE)
+```
+Alluvial plot, mapping among cluster results
+```{r alluvial}
+# alluvial plot
+alluvial(cbind(GeneExp=result_gene1,miRNAExp=result_miRNA1,Methyl=result_methyl1,SNF=result_SNF1),freq =rep(1,215))
+```
