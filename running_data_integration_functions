@@ -1,0 +1,228 @@
+---
+title: "Applying CancerSubtypes R package"
+subtitle: Utilising the CancerSubtypes R package
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Introduction:
+Explore feature selection.
+Test different clustering methods for obtaining sample subtypes.
+The example datasets are from TCGA.
+```{r libraries, message=FALSE}
+library(CancerSubtypes)
+library(RTCGA.mRNA)
+library(alluvial)
+library(fossil)
+library(SNFtool)
+```
+All packages should have been installed before the start of the course. If you are unable to load a library, check it is installed with:
+```{r check_package_again}
+req.packages <- c('CancerSubtypes', 'RTCGA.mRNA','alluvial','fossil','SNFtool')
+data.frame(installed=sapply(req.packages, require, character.only = TRUE))
+```
+Example TCGA Breast cancer mRNA dataset: check data distribution and try different feature selection methods
+```{r feature_selection}
+rm(list = ls())
+##load TCGA breast cancer data
+data(BRCA.mRNA)
+mRNA=t(as.matrix(BRCA.mRNA[,-1]))
+colnames(mRNA)=BRCA.mRNA[,1]
+
+###To observe the mean, variance and median absolute deviation distribution of the dataset, it helps to get the distribution characteristics of the data
+data.checkDistribution(mRNA)
+
+##Are there missing values? Impute the proper value for the missing observations (various options)
+index1=which(is.na(mRNA))
+res_imput=data.imputation(mRNA,fun="microarray")
+#res_imput=data.imputation(mRNA,fun="median")
+#res_imput=data.imputation(mRNA,fun="mean")
+
+##feature selection by median absolute deviation, based on top number of value features(check also option with cutoff value)
+features_mRNA=FSbyMAD(res_imput, cut.type="topk",value=5000)
+
+##feature selection by variance, based on top number of value features(check also option with cutoff value)
+#features_mRNA=FSbyVar(res_imput, cut.type="topk",value=5000)
+
+##feature selection based on PCA
+#features_mRNA=FSbyPCA(res_imput, PC_percent=0.9,scale = TRUE)
+
+###Split the normal and tumor samples
+index2=which(as.numeric(substr(colnames(features_mRNA),14,15))>9)
+features_mRNA_normal=features_mRNA[,index2]
+features_mRNA_tumor=features_mRNA[,-index2]
+
+### Remove the duplicate samples
+index3=which(as.numeric(substr(colnames(features_mRNA_tumor),14,15))>1)
+features_mRNA_tumor=features_mRNA_tumor[,-index3]
+```
+- Explore different clustering methods:
+Consensus Clustering - CC
+Consensus Non-negative matrix factorization - CNMF
+iCluster
+Similarity Network Fusion - SNF
+Consensus Clustering/Similarity Network Fusion - SNF-CC
+Weighted Similarity Network Fusion - WSNF
+
+integrating gene expression (small dataset with 1500 genes) and miRNA expression data from TCGA Glioblastoma dataset with 100 samples
+- Available Survival data
+- Available data - to be used in WSNF integrative clustering - representing the regulatory ranking for features(mRNA,TF,miRNA) calculated based on a miRNA-TF-miRNA regulatory network
+```{r data_processing}
+#load glioblastoma datasets
+data(GeneExp)
+data(miRNAExp)
+data(time)
+data(status)
+data(Ranking)
+
+##check samples are in the same order in both datasets
+identical(colnames(GeneExp), colnames(miRNAExp))
+## The input dataset is multiomics data as a list
+GBM=list(GeneExp=GeneExp,miRNAExp=miRNAExp)
+
+##Generate a normalized version of the data in which each feature has 0 mean and standard deviation of 1
+GBM_norm=list(GeneExp=data.normalization(GeneExp,type="feature_zscore",log2=FALSE),miRNAExp=data.normalization(miRNAExp,type="feature_zscore",log2=FALSE))
+
+##Generate a normalized version of the data by sweeping the median values of each feature.
+GBM_median_norm=list(GeneExp=data.normalization(GeneExp,type = "feature_Median", log2 = FALSE),miRNAExp=data.normalization(miRNAExp,type = "feature_Median", log2 = FALSE))
+
+##Generate other datasets after trying feature selection methods
+##feature selection based on Univariate cox regression model
+data_GeneExp_Cox=FSbyCox(GeneExp,time,status,cutoff=0.05)
+data_miRNAExp_Cox=FSbyCox(miRNAExp,time,status,cutoff=0.05)
+GBM_Cox=list(GeneExp=data_GeneExp_Cox, miRNAExp=data_miRNAExp_Cox)
+GBM_Cox_norm=list(GeneExp=data.normalization(data_GeneExp_Cox,type="feature_zscore",log2=FALSE),miRNAExp=data.normalization(data_miRNAExp_Cox,type="feature_zscore",log2=FALSE))
+
+##feature selection based on variance
+data_GeneExp_Var=FSbyVar(GeneExp, cut.type="topk",value=1000)
+data_miRNAExp_Var=FSbyVar(miRNAExp, cut.type="topk",value=300)
+GBM_Var=list(GeneExp=data_GeneExp_Var, miRNAExp=data_miRNAExp_Var)
+GBM_Var_norm=list(GeneExp=data.normalization(data_GeneExp_Var,type="feature_zscore",log2=FALSE),miRNAExp=data.normalization(data_miRNAExp_Var,type="feature_zscore",log2=FALSE))
+```
+Consensus clustering
+```{r CC}
+##Subtyping based on Consensus clustering
+result_CC<-ExecuteCC(clusterNum=3,d=GBM,maxK=10,clusterAlg="hc",distance="pearson",title="GBM")
+
+table(result_CC$group)
+
+##make plots
+#plot(silhouette_SimilarityMatrix(result_CC$group, result_CC$distanceMatrix))
+survAnalysis(mainTitle="GBM_CC",time,status,result_CC$group,result_CC$distanceMatrix,similarity=TRUE)
+```
+CNMF
+```{r CNMF}
+##Subtyping based on Consensus Non-negative matrix factorization
+result_CNMF=ExecuteCNMF(GBM,clusterNum=3,nrun=30)
+
+table(result_CNMF$group)
+
+##make plots
+#plot(silhouette_SimilarityMatrix(result_CNMF$group, result_CNMF$distanceMatrix))
+survAnalysis(mainTitle="GBM_CNMF",time,status,result_CNMF$group,result_CNMF$distanceMatrix,similarity=TRUE)
+```
+iCluster
+```{r iCluster}
+##Subtyping based on iCluster using dataset with feature selection based on variance
+result_iCluster=ExecuteiCluster(datasets=GBM_Var, k=3, lambda=list(0.44,0.33))
+table(result_iCluster$group)
+## Survival Curves
+survAnalysis(mainTitle="GBM_iCluster",time,status,result_iCluster$group)
+```
+SNF
+```{r SNF}
+##Subtyping based on SNF
+result_SNF=ExecuteSNF(GBM_norm, clusterNum=3, K=20, alpha=0.5, t=20)
+table(result_SNF$group)
+##make plots
+#plot(silhouette_SimilarityMatrix(result_SNF$group, result_SNF$distanceMatrix))
+survAnalysis(mainTitle="GBM_SNF",time,status,result_SNF$group,result_SNF$distanceMatrix,similarity=TRUE)
+```
+SNF-CC
+```{r SNF_CC}
+##Subtyping based on SNF-CC, using dataset with feature selection based on univariate cox model
+result_SNFCC_Cox=ExecuteSNF.CC(GBM_Cox_norm, clusterNum=3, K=20, alpha=0.5, t=20,maxK = 10, pItem = 0.8,reps=500, title = "GBM_SNFCC_Cox", plot = "png", finalLinkage ="average")
+table(result_SNFCC_Cox$group)
+##make plots
+#plot(silhouette_SimilarityMatrix(result_SNFCC_Cox$group, result_SNFCC_Cox$distanceMatrix))
+survAnalysis(mainTitle="GBM_SNFCC_Cox",time,status,result_SNFCC_Cox$group,result_SNFCC_Cox$distanceMatrix,similarity=TRUE)
+```
+WSNF
+```{r WSNF}
+##Subtyping based on Weighted Similarity network fusion
+##Retrieve the feature ranking for genes
+gene_Name=rownames(GeneExp)
+index1=match(gene_Name,Ranking$mRNA_TF_miRNA.v21_SYMBOL)
+gene_ranking=data.frame(gene_Name,Ranking[index1,],stringsAsFactors=FALSE)
+index2=which(is.na(gene_ranking$ranking_default))
+gene_ranking$ranking_default[index2]=min(gene_ranking$ranking_default,na.rm =TRUE)
+
+##Retrieve the feature ranking for miRNA
+miRNA_ID=rownames(miRNAExp)
+index3=match(miRNA_ID,Ranking$mRNA_TF_miRNA_ID)
+miRNA_ranking=data.frame(miRNA_ID,Ranking[index3,],stringsAsFactors=FALSE)
+index4=which(is.na(miRNA_ranking$ranking_default))
+miRNA_ranking$ranking_default[index4]=min(miRNA_ranking$ranking_default,na.rm =TRUE)
+ranking1=list(gene_ranking$ranking_default ,miRNA_ranking$ranking_default)
+##WSNF Clustering
+result_WSNF=ExecuteWSNF(datasets=GBM, feature_ranking=ranking1, beta = 0.8, clusterNum=3, K = 20,alpha = 0.5, t = 20, plot = TRUE)
+table(result_WSNF$group)
+##make plots
+#plot(silhouette_SimilarityMatrix(result_WSNF$group, result_WSNF$distanceMatrix))
+survAnalysis(mainTitle="GBM_WSNF",time,status,result_WSNF$group,result_WSNF$distanceMatrix,similarity=TRUE)
+```              
+Make alluvial plot of the various clustering results
+```{r alluvial}
+##make alluvial plot
+alluvial(cbind(CC=result_CC$group,CNMF=result_CNMF$group,iCluster=result_iCluster$group,SNF=result_SNF$group, SNF_CC=result_SNFCC_Cox$group, WSNF=result_WSNF$group),freq =rep(1,100))
+```
+SNF-CC
+```{r SNF_CC1}
+##Subtyping with SNF-CC with no feature selection
+result_SNFCC=ExecuteSNF.CC(GBM_norm, clusterNum=3, K=20, alpha=0.5, t=20,maxK = 10, pItem = 0.8,reps=500, title = "GBM_all_features", plot = "png", finalLinkage ="average")
+table(result_SNFCC$group)
+##make plots
+#plot(silhouette_SimilarityMatrix(result_SNFCC$group, result_SNFCC$distanceMatrix))
+survAnalysis(mainTitle="GBM_SNFCC",time,status,result_SNFCC$group,result_SNFCC$distanceMatrix,similarity=TRUE)
+```
+SNF-CC 
+```{r SNF_CC2}
+##Subtyping with SNF-CC with feature selection based on variance
+result_SNFCC_Var=ExecuteSNF.CC(GBM_Var_norm, clusterNum=3, K=20, alpha=0.5, t=20,maxK = 10, pItem = 0.8,reps=500, title = "GBM_Var", plot = "png", finalLinkage ="average")
+table(result_SNFCC_Var$group)
+##make plots
+#plot(silhouette_SimilarityMatrix(result_SNFCC_Var$group, result_SNFCC_Var$distanceMatrix))
+survAnalysis(mainTitle="GBM_SNFCC_Var",time,status,result_SNFCC_Var$group,result_SNFCC_Var$distanceMatrix,similarity=TRUE)
+```
+Alluvial plot of the SNF based clustering results
+```{r alluvial2}
+##make alluvial plot
+alluvial(cbind(SNF=result_SNF$group,SNFCC=result_SNFCC$group,SNFCC_Var=result_SNFCC_Var$group,SNFCC_Cox=result_SNFCC_Cox$group,WSNF=result_WSNF$group),freq =rep(1,100))
+```
+Calculate agreement between the various SNF based cluster results
+```{r rand_NMI}
+##calculate Normalized mutual information(NMI)
+calNMI(result_SNF$group, result_SNFCC$group)
+calNMI(result_SNF$group, result_SNFCC_Var$group)
+calNMI(result_SNF$group, result_SNFCC_Cox$group)
+calNMI(result_SNFCC$group, result_SNFCC_Cox$group)
+calNMI(result_SNFCC$group, result_SNFCC_Var$group)
+calNMI(result_SNFCC_Var$group, result_SNFCC_Cox$group)
+calNMI(result_WSNF$group, result_SNF$group)
+calNMI(result_WSNF$group, result_SNFCC$group)
+calNMI(result_WSNF$group, result_SNFCC_Var$group)
+calNMI(result_WSNF$group, result_SNFCC_Cox$group)
+
+##calculate adjusted rand index
+adj.rand.index(result_SNF$group, result_SNFCC$group)
+adj.rand.index(result_SNF$group, result_SNFCC_Var$group)
+adj.rand.index(result_SNF$group, result_SNFCC_Cox$group)
+adj.rand.index(result_SNFCC$group, result_SNFCC_Cox$group)
+adj.rand.index(result_SNFCC$group, result_SNFCC_Var$group)
+adj.rand.index(result_SNFCC_Var$group, result_SNFCC_Cox$group)
+adj.rand.index(result_WSNF$group, result_SNF$group)
+adj.rand.index(result_WSNF$group, result_SNFCC$group)
+adj.rand.index(result_WSNF$group, result_SNFCC_Var$group)
+adj.rand.index(result_WSNF$group, result_SNFCC_Cox$group)
+```
